@@ -1,6 +1,6 @@
 {
 	"name": "@izhimu/pi-cliproxyapi-provider",
-	"version": "1.4.18",
+	"version": "1.4.18-1",
 	"description": "Pi provider extension that auto-registers CLIProxyAPI models, plus TUI elapsed/TPS status",
 	"type": "module",
 	"keywords": [
