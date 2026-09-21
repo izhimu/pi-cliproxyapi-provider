@@ -803,8 +803,45 @@ export default async function (pi: ExtensionAPI): Promise<void> {
 		});
 
 		try {
-			const { registerApiProvider, unregisterApiProviders } = await import("@earendil-works/pi-ai/compat");
+			// Dynamic import: resolves Pi compatibility exports or OMP's canonical custom API registry.
+			const piAi: unknown =
+				(await import("@earendil-works/pi-ai/compat").catch(() => null)) ??
+				(await import("@earendil-works/pi-ai").catch(() => null)) ??
+				(await import("@oh-my-pi/pi-ai").catch(() => null));
 
+			const piAiRecord = piAi && typeof piAi === "object" ? (piAi as Record<string, unknown>) : null;
+
+			type RegisterCompatFn = (
+				entry: {
+					api: typeof CLIPROXYAPI_CODEX_API;
+					stream: StreamFunction<typeof CLIPROXYAPI_CODEX_API>;
+					streamSimple: StreamFunction<typeof CLIPROXYAPI_CODEX_API, SimpleStreamOptions>;
+				},
+				sourceId: string,
+			) => void;
+
+			const registerApi: RegisterCompatFn | undefined =
+				typeof piAiRecord?.registerApiProvider === "function"
+					? (entry, sourceId) =>
+							(piAiRecord.registerApiProvider as (e: typeof entry, s: string) => void)(entry, sourceId)
+					: typeof piAiRecord?.registerCustomApi === "function"
+						? (entry, sourceId) =>
+								(
+									piAiRecord.registerCustomApi as (
+										api: string,
+										streamSimple: unknown,
+										sourceId: string,
+										stream: unknown,
+									) => void
+								)(entry.api, entry.streamSimple, sourceId, entry.stream)
+						: undefined;
+
+			const unregisterApi: ((sourceId: string) => void) | undefined =
+				typeof piAiRecord?.unregisterApiProviders === "function"
+					? (sourceId) => (piAiRecord.unregisterApiProviders as (s: string) => void)(sourceId)
+					: typeof piAiRecord?.unregisterCustomApis === "function"
+						? (sourceId) => (piAiRecord.unregisterCustomApis as (s: string) => void)(sourceId)
+						: undefined;
 			const coordinator = getCompatCoordinator();
 			const instanceId = `${identity.providerId}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
 
@@ -851,8 +888,8 @@ export default async function (pi: ExtensionAPI): Promise<void> {
 				return active.rawStreamSimple(model, context, options);
 			};
 
-			unregisterApiProviders(COMPAT_SOURCE_ID);
-			registerApiProvider(
+			unregisterApi?.(COMPAT_SOURCE_ID);
+			registerApi?.(
 				{
 					api: CLIPROXYAPI_CODEX_API,
 					stream: dispatchStream as StreamFunction<typeof CLIPROXYAPI_CODEX_API>,
@@ -867,7 +904,7 @@ export default async function (pi: ExtensionAPI): Promise<void> {
 					coordinator.stack.splice(index, 1);
 				}
 				if (coordinator.stack.length === 0) {
-					unregisterApiProviders(COMPAT_SOURCE_ID);
+					unregisterApi?.(COMPAT_SOURCE_ID);
 				}
 			});
 		} catch (error) {

@@ -3,7 +3,7 @@ import type { ProactiveCompactionSettings } from "./auto-compact.ts";
 import type { FastModeController } from "./fast.ts";
 import { type PauseController, pauseController } from "./pause.ts";
 
-const FAST_FOOTER_PATCH = Symbol.for("@router-for-me/pi-cliproxyapi-provider/fast-footer-patch");
+const FAST_FOOTER_PATCH = Symbol.for("@izhimu/pi-cliproxyapi-provider/fast-footer-patch");
 const FAST_REFRESH_STATUS_KEY = "cliproxyapi-fast-refresh";
 // Orange labels: truecolor #ffa500, xterm 214
 const ORANGE_TRUECOLOR = "\x1b[38;2;255;165;0m";

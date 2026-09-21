@@ -241,6 +241,16 @@ export function decodeRefreshMeta(refresh: string | undefined): OAuthRefreshMeta
 	return null;
 }
 
+export function getCounterpartAgentDir(agentDir: string): string | undefined {
+	if (/(?:^|[/\\])\.omp(?:[/\\]|$)/.test(agentDir)) {
+		return agentDir.replace(/(^|[/\\])\.omp([/\\]|$)/, "$1.pi$2");
+	}
+	if (/(?:^|[/\\])\.pi(?:[/\\]|$)/.test(agentDir)) {
+		return agentDir.replace(/(^|[/\\])\.pi([/\\]|$)/, "$1.omp$2");
+	}
+	return undefined;
+}
+
 export function loadConfigFile(agentDir: string): CliproxyConfigFile {
 	const configPath = join(agentDir, CONFIG_FILE_NAME);
 	try {
@@ -255,6 +265,18 @@ export function loadConfigFile(agentDir: string): CliproxyConfigFile {
 		if (err.code !== "ENOENT") {
 			throw error;
 		}
+		const counterpart = getCounterpartAgentDir(agentDir);
+		if (counterpart && counterpart !== agentDir) {
+			try {
+				const counterpartRaw = readFileSync(join(counterpart, CONFIG_FILE_NAME), "utf8");
+				const parsed: unknown = JSON.parse(counterpartRaw);
+				if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+					return parsed as CliproxyConfigFile;
+				}
+			} catch {
+				// Ignore counterpart read errors
+			}
+		}
 		return {};
 	}
 }
@@ -267,9 +289,22 @@ export interface ConfiguredDefaultModelSettings {
 }
 
 export function loadConfiguredDefaultSettings(agentDir: string): ConfiguredDefaultModelSettings {
-	const settingsPath = join(agentDir, SETTINGS_FILE_NAME);
+	let raw: string | undefined;
 	try {
-		const parsed = JSON.parse(readFileSync(settingsPath, "utf8")) as Record<string, unknown>;
+		raw = readFileSync(join(agentDir, SETTINGS_FILE_NAME), "utf8");
+	} catch {
+		const counterpart = getCounterpartAgentDir(agentDir);
+		if (counterpart && counterpart !== agentDir) {
+			try {
+				raw = readFileSync(join(counterpart, SETTINGS_FILE_NAME), "utf8");
+			} catch {
+				// ignore
+			}
+		}
+	}
+	if (!raw) return {};
+	try {
+		const parsed = JSON.parse(raw) as Record<string, unknown>;
 		return {
 			defaultProvider:
 				typeof parsed.defaultProvider === "string" && parsed.defaultProvider.trim()
@@ -318,9 +353,22 @@ export function saveConfigFile(agentDir: string, config: CliproxyConfigFile): vo
 }
 
 export function loadModelsCache(agentDir: string, baseUrlInput: string): ModelsCacheFile | null {
-	const cachePath = join(agentDir, MODELS_CACHE_FILE_NAME);
+	let raw: string | undefined;
 	try {
-		const parsed = JSON.parse(readFileSync(cachePath, "utf8")) as Partial<ModelsCacheFile>;
+		raw = readFileSync(join(agentDir, MODELS_CACHE_FILE_NAME), "utf8");
+	} catch {
+		const counterpart = getCounterpartAgentDir(agentDir);
+		if (counterpart && counterpart !== agentDir) {
+			try {
+				raw = readFileSync(join(counterpart, MODELS_CACHE_FILE_NAME), "utf8");
+			} catch {
+				// ignore
+			}
+		}
+	}
+	if (!raw) return null;
+	try {
+		const parsed = JSON.parse(raw) as Partial<ModelsCacheFile>;
 		const endpoints = resolveEndpoints(baseUrlInput);
 		if (
 			typeof parsed.fetchedAt !== "number" ||
@@ -343,18 +391,41 @@ export function saveModelsCache(agentDir: string, loaded: MappedModels, fetchedA
 	writeFileSync(cachePath, `${JSON.stringify({ ...loaded, fetchedAt }, null, 2)}\n`, "utf8");
 }
 
+function readRawAuthFileCredential(authPath: string, providerId: string): unknown {
+	try {
+		const raw = readFileSync(authPath, "utf8");
+		const parsed = JSON.parse(raw) as Record<string, unknown>;
+		return parsed?.[providerId];
+	} catch {
+		return undefined;
+	}
+}
+
 export function loadAuthConnection(agentDir: string, providerId: string): { baseUrl?: string; apiKey?: string } | null {
-	const entry = readStoredCredential(providerId, join(agentDir, AUTH_FILE_NAME));
-	if (entry?.type === "oauth" && typeof entry.access === "string" && entry.access.trim()) {
-		const meta = decodeRefreshMeta(typeof entry.refresh === "string" ? entry.refresh : undefined);
+	let entry: unknown = readStoredCredential(providerId, join(agentDir, AUTH_FILE_NAME));
+	if (!entry) {
+		entry = readRawAuthFileCredential(join(agentDir, AUTH_FILE_NAME), providerId);
+	}
+	if (!entry) {
+		const counterpart = getCounterpartAgentDir(agentDir);
+		if (counterpart && counterpart !== agentDir) {
+			entry =
+				readStoredCredential(providerId, join(counterpart, AUTH_FILE_NAME)) ??
+				readRawAuthFileCredential(join(counterpart, AUTH_FILE_NAME), providerId);
+		}
+	}
+
+	const record = entry && typeof entry === "object" ? (entry as Record<string, unknown>) : null;
+	if (record?.type === "oauth" && typeof record.access === "string" && record.access.trim()) {
+		const meta = decodeRefreshMeta(typeof record.refresh === "string" ? record.refresh : undefined);
 		return {
-			apiKey: entry.access.trim(),
+			apiKey: record.access.trim(),
 			baseUrl: meta?.baseUrl,
 		};
 	}
 
-	if (entry?.type === "api_key" && typeof entry.key === "string" && entry.key.trim()) {
-		return { apiKey: entry.key.trim() };
+	if (record?.type === "api_key" && typeof record.key === "string" && record.key.trim()) {
+		return { apiKey: record.key.trim() };
 	}
 	return null;
 }
@@ -822,9 +893,24 @@ function getModelsDevCachePath(agentDir?: string): string {
 	return join(tmpdir(), "pi-cliproxyapi-models-dev-cache.json");
 }
 
-function readModelsDevCacheFile(cachePath: string): ModelsDevCacheFile | null {
+function readModelsDevCacheFile(cachePath: string, agentDir?: string): ModelsDevCacheFile | null {
+	let raw: string | undefined;
 	try {
-		const raw = readFileSync(cachePath, "utf8");
+		raw = readFileSync(cachePath, "utf8");
+	} catch {
+		if (agentDir) {
+			const counterpart = getCounterpartAgentDir(agentDir);
+			if (counterpart && counterpart !== agentDir) {
+				try {
+					raw = readFileSync(getModelsDevCachePath(counterpart), "utf8");
+				} catch {
+					// ignore
+				}
+			}
+		}
+	}
+	if (!raw) return null;
+	try {
 		const parsed = asRecord(JSON.parse(raw));
 		if (!parsed || typeof parsed.timestamp !== "number" || !Number.isFinite(parsed.timestamp)) return null;
 		const providers = asRecord(parsed.providers);
@@ -878,7 +964,7 @@ export async function fetchModelsDevCostMap(
 	signal?: AbortSignal,
 ): Promise<ModelsDevCostCatalog> {
 	const cachePath = getModelsDevCachePath(agentDir);
-	const cached = readModelsDevCacheFile(cachePath);
+	const cached = readModelsDevCacheFile(cachePath, agentDir);
 
 	if (!forceRefresh && cached && Date.now() - cached.timestamp < MODELS_DEV_CACHE_TTL_MS) {
 		return buildCatalogFromProviders(cached.providers);

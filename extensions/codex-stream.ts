@@ -547,6 +547,60 @@ export async function loadCliproxyCodexStreams(
 	providerIds: string[] = ["cliproxyapi"],
 	options: CliproxyCodexStreamOptions = {},
 ): Promise<CliproxyCodexStreams> {
+	const isBunHost = typeof (globalThis as unknown as { Bun?: unknown }).Bun !== "undefined";
+	if (isBunHost) {
+		try {
+			// Dynamic import: platform-specific OMP module that does not exist on stock pi.
+			const ompMod: unknown =
+				(await import("@earendil-works/pi-ai/providers/openai-codex-responses").catch(() => null)) ??
+				(await import("@oh-my-pi/pi-ai/providers/openai-codex-responses").catch(() => null));
+			if (
+				ompMod &&
+				typeof ompMod === "object" &&
+				"streamOpenAICodexResponses" in ompMod &&
+				typeof ompMod.streamOpenAICodexResponses === "function"
+			) {
+				const streamCodex = ompMod.streamOpenAICodexResponses as (
+					model: Model<Api>,
+					context: Context,
+					options?: SimpleStreamOptions,
+				) => AssistantMessageEventStream;
+				// OMP's catalog materializes `compat` only for built-in API ids; our
+				// custom api id yields models with `compat: undefined`, and the codex
+				// provider reads `compat.supportsImageDetailOriginal` and
+				// `compat.supportsConfigurationUpdate` unconditionally. The catalog
+				// package is not resolvable from extensions (omp's loader remaps only
+				// pi-agent-core/pi-ai/pi-coding-agent/pi-natives/pi-tui/pi-utils), so
+				// inject safe proxy defaults: clamp `detail: "original"` to "auto" and
+				// never emit `configuration_update` items.
+				const withBuiltFields = (model: Model<Api>): Model<Api> => {
+					if ("compat" in model && model.compat) return model;
+					return {
+						...model,
+						compat: {
+							supportsImageDetailOriginal: false,
+							supportsConfigurationUpdate: false,
+						},
+					} as Model<Api>;
+				};
+				const ompRawStream: CliproxyCodexStreamSimple = (model, context, streamOptions) =>
+					streamCodex(withBuiltFields(model), adaptTranscriptContext(context), streamOptions);
+				const streamSimple = wrapStreamSimpleForFast(ompRawStream, options.shouldUseFast);
+				const stream = wrapStreamSimpleForFast(ompRawStream, options.shouldUseFast);
+				return {
+					api: CLIPROXYAPI_CODEX_API,
+					streamSimple,
+					stream,
+					rawStreamSimple: ompRawStream,
+					rawStream: ompRawStream,
+					closeOpenAICodexWebSocketSessions: () => {},
+				};
+			}
+		} catch {
+			// Fall through to stock pi-ai module loading
+		}
+	}
+
 	const { path: originalPath } = resolveOriginalCodexModulePath();
 	const originalSource = readFileSync(originalPath, "utf8");
 	const patched = patchCodexSource(originalSource, providerIds);

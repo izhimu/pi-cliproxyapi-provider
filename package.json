@@ -1,22 +1,24 @@
 {
-	"name": "@router-for-me/pi-cliproxyapi-provider",
+	"name": "@izhimu/pi-cliproxyapi-provider",
 	"version": "1.4.18",
 	"description": "Pi provider extension that auto-registers CLIProxyAPI models, plus TUI elapsed/TPS status",
 	"type": "module",
 	"keywords": [
 		"pi-package",
 		"pi-extension",
+		"omp-package",
+		"omp-extension",
 		"cliproxyapi",
 		"tps"
 	],
 	"license": "MIT",
 	"repository": {
 		"type": "git",
-		"url": "git+https://github.com/router-for-me/pi-cliproxyapi-provider.git"
+		"url": "git+https://github.com/izhimu/pi-cliproxyapi-provider.git"
 	},
-	"homepage": "https://github.com/router-for-me/pi-cliproxyapi-provider#readme",
+	"homepage": "https://github.com/izhimu/pi-cliproxyapi-provider#readme",
 	"bugs": {
-		"url": "https://github.com/router-for-me/pi-cliproxyapi-provider/issues"
+		"url": "https://github.com/izhimu/pi-cliproxyapi-provider/issues"
 	},
 	"publishConfig": {
 		"access": "public"
@@ -37,9 +39,31 @@
 			"./extensions/tps.ts"
 		]
 	},
+	"omp": {
+		"extensions": [
+			"./extensions/index.ts",
+			"./extensions/tps.ts"
+		]
+	},
 	"peerDependencies": {
 		"@earendil-works/pi-ai": "*",
-		"@earendil-works/pi-coding-agent": ">=0.82.0"
+		"@earendil-works/pi-coding-agent": ">=0.82.0",
+		"@oh-my-pi/pi-ai": "*",
+		"@oh-my-pi/pi-coding-agent": ">=18.0.0"
+	},
+	"peerDependenciesMeta": {
+		"@earendil-works/pi-ai": {
+			"optional": true
+		},
+		"@earendil-works/pi-coding-agent": {
+			"optional": true
+		},
+		"@oh-my-pi/pi-ai": {
+			"optional": true
+		},
+		"@oh-my-pi/pi-coding-agent": {
+			"optional": true
+		}
 	},
 	"devDependencies": {
 		"@biomejs/biome": "2.5.3",
