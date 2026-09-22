@@ -1141,6 +1141,7 @@ export async function resolveMappedModels(
 		signal?: AbortSignal;
 		shouldCommit?: () => boolean;
 		staleTtlMs?: number;
+		pruneStale?: boolean;
 	} = {},
 ): Promise<ResolvedModelsResult> {
 	const cacheMatchesFastMode = (cache: ModelsCacheFile): boolean =>
@@ -1154,7 +1155,9 @@ export async function resolveMappedModels(
 	}
 
 	const fresh = await loadMappedModels(baseUrlInput, apiKey, options.fastMode, agentDir, options.signal);
-	const { merged } = mergeModelsWithExistingCache(existingCache, fresh, Date.now(), options.staleTtlMs);
+	const { merged } = options.pruneStale
+		? mergeModelsWithExistingCache(null, fresh, Date.now())
+		: mergeModelsWithExistingCache(existingCache, fresh, Date.now(), options.staleTtlMs);
 	if (!options.signal?.aborted && (options.shouldCommit?.() ?? true)) {
 		saveModelsCache(agentDir, merged);
 	}

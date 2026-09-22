@@ -50,6 +50,7 @@ import {
 	loadConfiguredDefaultSettings,
 	type MappedModels,
 	type PiProviderModel,
+	type ResolvedConnection,
 	resolveConnection,
 	resolveEndpoints,
 	resolveFastDefault,
@@ -78,6 +79,7 @@ interface RefreshResult {
 
 export const DEFAULT_AUTO_RECOVERY_DELAY_MS = 60_000;
 export const MAX_AUTO_RECOVERY_DELAY_MS = 300_000;
+export const MAX_AUTO_RECOVERY_ATTEMPTS = 5;
 
 export interface RecoverySnapshot {
 	action: () => Promise<unknown>;
@@ -110,8 +112,13 @@ class ModelRefreshCoordinator {
 		action: () => Promise<unknown>,
 		baseDelayMs = DEFAULT_AUTO_RECOVERY_DELAY_MS,
 		maxDelayMs = MAX_AUTO_RECOVERY_DELAY_MS,
+		maxAttempts = MAX_AUTO_RECOVERY_ATTEMPTS,
 	): void {
 		if (this.stopped) return;
+		if (this.recoveryAttempt >= maxAttempts) {
+			this.clearRecovery();
+			return;
+		}
 		this.clearRecoveryTimer();
 		const delay = Math.min(baseDelayMs * 1.5 ** this.recoveryAttempt, maxDelayMs);
 		this.recoveryAttempt += 1;
@@ -135,9 +142,12 @@ class ModelRefreshCoordinator {
 		return undefined;
 	}
 
-	restoreRecovery(snapshot: RecoverySnapshot): void {
+	restoreRecovery(snapshot: RecoverySnapshot, maxAttempts = MAX_AUTO_RECOVERY_ATTEMPTS): void {
 		if (this.stopped || !snapshot) return;
-		this.clearRecoveryTimer();
+		if (snapshot.attempt >= maxAttempts) {
+			this.clearRecovery();
+			return;
+		}
 		this.recoveryAttempt = snapshot.attempt;
 		this.activeRecovery = snapshot;
 		this.recoveryTimer = setTimeout(() => {
@@ -671,7 +681,10 @@ export function registerRefreshCommand(options: {
 	streamSimple: CliproxyCodexStreamSimple;
 	fastMode: FastModeController;
 	refreshCoordinator?: ModelRefreshCoordinator;
-	onRefresh?: (connection: NonNullable<ReturnType<typeof resolveConnection>>) => Promise<RefreshResult | undefined>;
+	onRefresh?: (
+		connection: ResolvedConnection,
+		options?: { pruneStale?: boolean },
+	) => Promise<RefreshResult | undefined>;
 }): void {
 	const {
 		pi,
@@ -705,12 +718,13 @@ export function registerRefreshCommand(options: {
 			try {
 				let result: RefreshResult | undefined;
 				if (onRefresh) {
-					result = await onRefresh(connection);
+					result = await onRefresh(connection, { pruneStale: true });
 					if (!result) return;
 				} else {
 					const refresh = refreshCoordinator?.begin();
 					const { loaded } = await resolveMappedModels(agentDir, connection.baseUrlInput, connection.apiKey, {
 						forceRefresh: true,
+						pruneStale: true,
 						fastMode: fastMode.isEnabled(),
 						signal: refresh?.signal,
 						shouldCommit: refresh ? () => refreshCoordinator?.isCurrent(refresh.generation) ?? true : undefined,
@@ -1018,7 +1032,7 @@ export default async function (pi: ExtensionAPI): Promise<void> {
 	const connection = resolveConnection(agentDir, identity.providerId);
 	const registerConfiguredProvider = async (
 		currentConnection: { baseUrlInput: string; apiKey: string },
-		options: { forceRefresh?: boolean } = {},
+		options: { forceRefresh?: boolean; pruneStale?: boolean } = {},
 	): Promise<RefreshResult | undefined> => {
 		const refresh = modelRefreshCoordinator.begin();
 		try {
@@ -1028,6 +1042,7 @@ export default async function (pi: ExtensionAPI): Promise<void> {
 				currentConnection.apiKey,
 				{
 					forceRefresh: options.forceRefresh,
+					pruneStale: options.pruneStale,
 					fastMode: fastMode.isEnabled(),
 					signal: refresh.signal,
 					shouldCommit: () => modelRefreshCoordinator.isCurrent(refresh.generation),
@@ -1114,9 +1129,9 @@ export default async function (pi: ExtensionAPI): Promise<void> {
 		streamSimple,
 		fastMode,
 		refreshCoordinator: modelRefreshCoordinator,
-		onRefresh: (currentConnection) => registerConfiguredProvider(currentConnection, { forceRefresh: true }),
+		onRefresh: (currentConnection, opts) =>
+			registerConfiguredProvider(currentConnection, { forceRefresh: true, pruneStale: opts?.pruneStale ?? true }),
 	});
-
 	if (!connection) {
 		logInfo(
 			`not configured yet. Use /login ${identity.providerName} or /login ${identity.providerId}. ` +

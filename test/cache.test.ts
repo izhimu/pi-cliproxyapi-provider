@@ -375,6 +375,34 @@ describe("resolveMappedModels cache behavior", () => {
 			fetchMock.mockRestore();
 		}
 	});
+	it("prunes omitted models when pruneStale is true even if recently cached", async () => {
+		const agentDir = tempAgentDir();
+		const cached = createMappedModels({
+			models: [createModel("gemini-3.8-flash-high"), createModel("gpt-4o")],
+			fastModelIds: ["gemini-3.8-flash-high"],
+		});
+		saveModelsCache(agentDir, cached, Date.now());
+
+		const fetchMock = vi
+			.spyOn(globalThis, "fetch")
+			.mockResolvedValue(new Response(JSON.stringify({ models: [createCodexModel("gpt-4o")] }), { status: 200 }));
+
+		try {
+			const result = await resolveMappedModels(agentDir, "http://127.0.0.1:8317", "key", {
+				forceRefresh: true,
+				pruneStale: true,
+			});
+			expect(result.fromCache).toBe(false);
+			expect(result.loaded.models.map((m) => m.id)).toEqual(["gpt-4o"]);
+			expect(result.loaded.models[0]?.stale).toBe(false);
+
+			const diskCache = loadModelsCache(agentDir, "http://127.0.0.1:8317");
+			expect(diskCache?.models.map((m) => m.id)).toEqual(["gpt-4o"]);
+			expect(diskCache?.models.find((m) => m.id === "gemini-3.8-flash-high")).toBeUndefined();
+		} finally {
+			fetchMock.mockRestore();
+		}
+	});
 
 	it("retains a model from an 8-day old cache when it first goes missing", () => {
 		const eightDaysMs = 8 * 24 * 60 * 60 * 1000;
@@ -999,6 +1027,53 @@ describe("/cliproxyapi-refresh command", () => {
 				const diskCache = loadModelsCache(agentDir, "http://127.0.0.1:8317");
 				expect(diskCache?.models[0].id).toBe("refreshed");
 				expect(diskCache?.fastModelIds).toEqual(["refreshed"]);
+			} finally {
+				fetchMock.mockRestore();
+			}
+		});
+	});
+	it("prunes omitted models when /cliproxyapi-refresh is executed and clears stale state", async () => {
+		await withTempAgentDir(async (agentDir) => {
+			writeConfig(agentDir, { baseUrl: "http://127.0.0.1:8317", apiKey: "key" });
+			const recentCache = createMappedModels({
+				models: [createModel("deleted-model"), createModel("active-model")],
+			});
+			saveModelsCache(agentDir, recentCache, Date.now());
+
+			const fetchMock = vi
+				.spyOn(globalThis, "fetch")
+				.mockImplementation(() =>
+					Promise.resolve(
+						new Response(JSON.stringify({ models: [createCodexModel("active-model", true)] }), { status: 200 }),
+					),
+				);
+			const { pi, commands } = createPiMock();
+
+			try {
+				await providerExtension(pi);
+				const refresh = commands.get("cliproxyapi-refresh")!;
+				const notify = vi.fn();
+				const model = { id: "active-model", provider: "cliproxyapi" } as Model<Api>;
+				const ctx = { model, ui: { notify } } as unknown as ExtensionCommandContext;
+
+				await refresh.handler("", ctx);
+
+				expect(notify).toHaveBeenCalledWith(
+					"Refreshed 1 CLIProxyAPI models from http://127.0.0.1:8317/v1/models?client_version=pi.",
+					"info",
+				);
+
+				const diskCache = loadModelsCache(agentDir, "http://127.0.0.1:8317");
+				expect(diskCache?.models.map((m) => m.id)).toEqual(["active-model"]);
+				expect(diskCache?.models.find((m) => m.id === "deleted-model")).toBeUndefined();
+
+				const callsWithModels = (
+					(pi.registerProvider as ReturnType<typeof vi.fn>).mock.calls as Array<
+						[string, { models?: PiProviderModel[] }]
+					>
+				).filter(([, config]) => config.models && config.models.length > 0);
+				const lastRegisteredModels = callsWithModels.at(-1)?.[1].models;
+				expect(lastRegisteredModels?.map((m) => m.id)).toEqual(["active-model"]);
 			} finally {
 				fetchMock.mockRestore();
 			}
