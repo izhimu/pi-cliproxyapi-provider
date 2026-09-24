@@ -8,6 +8,7 @@ import {
 	buildThinkingLevelMap,
 	CONFIG_FILE_NAME,
 	type CodexClientModel,
+	clearMemoryCostCatalogCache,
 	DEFAULT_BASE_URL,
 	DEFAULT_CONTEXT_WINDOW,
 	DEFAULT_MAX_TOKENS,
@@ -26,9 +27,11 @@ import {
 	ModelsHttpError,
 	matchModelCost,
 	parseBooleanSetting,
+	resolveConnection,
 	resolveEndpoints,
 	resolveFastDefault,
 	resolveIdentity,
+	resolvePauseDefault,
 	saveConfigFile,
 	supportsFastServiceTier,
 	toPiModel,
@@ -370,6 +373,76 @@ describe("models.dev cost mapping", () => {
 		} finally {
 			fetchMock.mockRestore();
 		}
+	});
+	it("serves subsequent calls from in-memory cache even if disk file is removed", async () => {
+		clearMemoryCostCatalogCache();
+		const tempDir = tempAgentDir();
+		const fetchMock = vi.spyOn(globalThis, "fetch").mockImplementation(async () => {
+			return new Response(
+				JSON.stringify({
+					openai: {
+						models: {
+							"gpt-5.6-sol": { cost: { input: 5, output: 30 } },
+						},
+					},
+				}),
+				{ status: 200 },
+			);
+		});
+
+		try {
+			// First call populates disk and memory cache
+			await fetchModelsDevCostMap(tempDir);
+
+			// Delete the disk cache file completely
+			const cacheFile = join(tempDir, "tmp", "models-dev-cache.json");
+			rmSync(cacheFile, { force: true });
+
+			// Second call should still succeed from in-memory cache without hitting network or failing on missing file
+			const catalog = await fetchModelsDevCostMap(tempDir);
+			expect(matchModelCost("gpt-5.6-sol", catalog).input).toBe(5);
+			expect(fetchMock).toHaveBeenCalledTimes(1);
+
+			// Clearing memory cache forces disk/network reload, which triggers network fetch again
+			clearMemoryCostCatalogCache();
+			await fetchModelsDevCostMap(tempDir);
+			expect(fetchMock).toHaveBeenCalledTimes(2);
+		} finally {
+			fetchMock.mockRestore();
+		}
+	});
+
+	it("reuses pre-loaded configFile across resolvers without reading disk overrides", () => {
+		const tempDir = tempAgentDir();
+		// Write a disk configuration that differs from the in-memory object
+		saveConfigFile(tempDir, {
+			providerId: "disk-provider",
+			providerName: "Disk Provider",
+			fast: false,
+			pause: false,
+			apiKey: "disk-key",
+		});
+
+		const memoryConfig = {
+			providerId: "mem-provider",
+			providerName: "Memory Provider",
+			fast: true,
+			pause: true,
+			apiKey: "mem-key",
+		};
+
+		const identity = resolveIdentity(tempDir, memoryConfig);
+		expect(identity.providerId).toBe("mem-provider");
+		expect(identity.providerName).toBe("Memory Provider");
+
+		const fast = resolveFastDefault(tempDir, memoryConfig);
+		expect(fast).toBe(true);
+
+		const pause = resolvePauseDefault(tempDir, memoryConfig);
+		expect(pause).toBe(true);
+
+		const connection = resolveConnection(tempDir, "mem-provider", memoryConfig);
+		expect(connection?.apiKey).toBe("mem-key");
 	});
 
 	it("falls back to stale disk cache when network request fails", async () => {

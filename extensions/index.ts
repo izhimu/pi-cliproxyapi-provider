@@ -37,6 +37,7 @@ import {
 import { FastModeController } from "./fast.ts";
 import { FastFooterController } from "./fast-footer.ts";
 import {
+	type CliproxyConfigFile,
 	CONFIG_FILE_NAME,
 	CREDENTIAL_TTL_MS,
 	DEFAULT_BASE_URL,
@@ -246,17 +247,20 @@ function buildOAuthCredentials(baseUrlInput: string, apiKey: string): OAuthCrede
 	};
 }
 
-function resolveDefaultBaseUrl(agentDir: string, providerId: string): string {
+function resolveDefaultBaseUrl(agentDir: string, providerId: string, configFile?: CliproxyConfigFile): string {
 	let fileBaseUrl: string | undefined;
-	try {
-		fileBaseUrl = loadConfigFile(agentDir).baseUrl;
-	} catch (error) {
-		const err = error as NodeJS.ErrnoException;
-		if (err.code !== "ENOENT") {
-			logWarn(`failed to read ${CONFIG_FILE_NAME}: ${err.message}`);
+	if (configFile !== undefined) {
+		fileBaseUrl = configFile.baseUrl;
+	} else {
+		try {
+			fileBaseUrl = loadConfigFile(agentDir).baseUrl;
+		} catch (error) {
+			const err = error as NodeJS.ErrnoException;
+			if (err.code !== "ENOENT") {
+				logWarn(`failed to read ${CONFIG_FILE_NAME}: ${err.message}`);
+			}
 		}
 	}
-
 	let authBaseUrl: string | undefined;
 	try {
 		authBaseUrl = loadAuthConnection(agentDir, providerId)?.baseUrl;
@@ -772,12 +776,20 @@ export { resolveEndpoints, toPiModel } from "./lib.ts";
 
 export default async function (pi: ExtensionAPI): Promise<void> {
 	const agentDir = getAgentDir();
-	const identity = resolveIdentity(agentDir);
-	const defaultBaseUrl = resolveDefaultBaseUrl(agentDir, identity.providerId);
-
+	let configFile: CliproxyConfigFile = {};
+	try {
+		configFile = loadConfigFile(agentDir);
+	} catch (error) {
+		const err = error as NodeJS.ErrnoException;
+		if (err.code !== "ENOENT") {
+			logWarn(`failed to read ${CONFIG_FILE_NAME}: ${err.message}`);
+		}
+	}
+	const identity = resolveIdentity(agentDir, configFile);
+	const defaultBaseUrl = resolveDefaultBaseUrl(agentDir, identity.providerId, configFile);
 	let pauseEnabled = false;
 	try {
-		pauseEnabled = resolvePauseDefault(agentDir);
+		pauseEnabled = resolvePauseDefault(agentDir, configFile);
 	} catch (error) {
 		const message = error instanceof Error ? error.message : String(error);
 		logWarn(`invalid pause configuration (${message}); using pause=false`);
@@ -791,7 +803,7 @@ export default async function (pi: ExtensionAPI): Promise<void> {
 
 	let fastEnabled = false;
 	try {
-		fastEnabled = resolveFastDefault(agentDir);
+		fastEnabled = resolveFastDefault(agentDir, configFile);
 	} catch (error) {
 		const message = error instanceof Error ? error.message : String(error);
 		logWarn(`invalid Fast configuration (${message}); using fast=false`);
@@ -964,9 +976,6 @@ export default async function (pi: ExtensionAPI): Promise<void> {
 		latestStaleModelIds = staleModels.map((m) => m.id);
 
 		if (staleModels.length > 0) {
-			logWarn(
-				`upstream catalog omitted ${staleModels.length} model(s) (${latestStaleModelIds.join(", ")}); retaining cached entries temporarily.`,
-			);
 			if (activeContext) {
 				checkAndNotifyStaleModel(activeContext);
 			}
@@ -1029,7 +1038,7 @@ export default async function (pi: ExtensionAPI): Promise<void> {
 		modelRefreshCoordinator.stop();
 	});
 
-	const connection = resolveConnection(agentDir, identity.providerId);
+	const connection = resolveConnection(agentDir, identity.providerId, configFile);
 	const registerConfiguredProvider = async (
 		currentConnection: { baseUrlInput: string; apiKey: string },
 		options: { forceRefresh?: boolean; pruneStale?: boolean } = {},

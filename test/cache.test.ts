@@ -798,6 +798,39 @@ describe("provider startup cache behavior", () => {
 		});
 	});
 
+	it("does not log to console.warn when upstream catalog omits cached models", async () => {
+		await withTempAgentDir(async (agentDir) => {
+			writeConfig(agentDir, { baseUrl: "http://127.0.0.1:8317", apiKey: "key" });
+			const cached = createMappedModels({
+				models: [createModel("omitted-model"), createModel("active-model")],
+			});
+			saveModelsCache(agentDir, cached, Date.now());
+
+			const fetchMock = vi.spyOn(globalThis, "fetch").mockImplementation(async (input) => {
+				if (String(input).includes("models.dev")) {
+					return new Response("{}", { status: 200 });
+				}
+				return new Response(JSON.stringify({ models: [createCodexModel("active-model")] }), { status: 200 });
+			});
+			const warnMock = vi.spyOn(console, "warn").mockImplementation(() => {});
+			const { pi, emit } = createPiMock();
+			const notify = vi.fn();
+			const ctx = { ui: { notify }, model: { id: "active-model", provider: "cliproxyapi" } };
+
+			try {
+				await providerExtension(pi);
+				await waitForAsyncRefresh();
+
+				await emit("session_start", { reason: "startup" }, ctx);
+
+				expect(warnMock).not.toHaveBeenCalledWith(expect.stringContaining("upstream catalog omitted"));
+			} finally {
+				fetchMock.mockRestore();
+				warnMock.mockRestore();
+			}
+		});
+	});
+
 	it("aborts in-flight background refresh and ignores results on session_shutdown", async () => {
 		await withTempAgentDir(async (agentDir) => {
 			writeConfig(agentDir, { baseUrl: "http://127.0.0.1:8317", apiKey: "key" });

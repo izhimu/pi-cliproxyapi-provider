@@ -430,14 +430,17 @@ export function loadAuthConnection(agentDir: string, providerId: string): { base
 	return null;
 }
 
-export function resolveIdentity(agentDir: string): ResolvedIdentity {
+export function resolveIdentity(agentDir: string, configFile?: CliproxyConfigFile): ResolvedIdentity {
 	let file: CliproxyConfigFile = {};
-	try {
-		file = loadConfigFile(agentDir);
-	} catch {
-		file = {};
+	if (configFile !== undefined) {
+		file = configFile;
+	} else {
+		try {
+			file = loadConfigFile(agentDir);
+		} catch {
+			file = {};
+		}
 	}
-
 	return {
 		providerId: firstNonEmpty(process.env.CLIPROXYAPI_PROVIDER_ID, file.providerId, DEFAULT_PROVIDER_ID)!,
 		providerName: firstNonEmpty(process.env.CLIPROXYAPI_PROVIDER_NAME, file.providerName, DEFAULT_PROVIDER_NAME)!,
@@ -462,7 +465,7 @@ export function parseBooleanSetting(value: string): boolean | undefined {
 }
 
 /** Resolve the Fast preference from env, then cliproxyapi.json, then false. */
-export function resolveFastDefault(agentDir: string): boolean {
+export function resolveFastDefault(agentDir: string, configFile?: CliproxyConfigFile): boolean {
 	const envValue = firstNonEmpty(process.env.CLIPROXYAPI_FAST);
 	if (envValue !== undefined) {
 		const parsed = parseBooleanSetting(envValue);
@@ -472,7 +475,7 @@ export function resolveFastDefault(agentDir: string): boolean {
 		return parsed;
 	}
 
-	const file = loadConfigFile(agentDir);
+	const file = configFile ?? loadConfigFile(agentDir);
 	if (file.fast === undefined) {
 		return false;
 	}
@@ -483,8 +486,8 @@ export function resolveFastDefault(agentDir: string): boolean {
 }
 
 /** Resolve the request pause preference from cliproxyapi.json, defaulting to false. */
-export function resolvePauseDefault(agentDir: string): boolean {
-	const file = loadConfigFile(agentDir);
+export function resolvePauseDefault(agentDir: string, configFile?: CliproxyConfigFile): boolean {
+	const file = configFile ?? loadConfigFile(agentDir);
 	if (file.pause === undefined) {
 		return false;
 	}
@@ -498,14 +501,21 @@ export function resolvePauseDefault(agentDir: string): boolean {
  * Resolve connection settings.
  * Priority: env > cliproxyapi.json > auth.json (/login) > default baseUrl
  */
-export function resolveConnection(agentDir: string, providerId: string): ResolvedConnection | null {
+export function resolveConnection(
+	agentDir: string,
+	providerId: string,
+	configFile?: CliproxyConfigFile,
+): ResolvedConnection | null {
 	let file: CliproxyConfigFile = {};
-	try {
-		file = loadConfigFile(agentDir);
-	} catch {
-		file = {};
+	if (configFile !== undefined) {
+		file = configFile;
+	} else {
+		try {
+			file = loadConfigFile(agentDir);
+		} catch {
+			file = {};
+		}
 	}
-
 	let auth: { baseUrl?: string; apiKey?: string } | null = null;
 	try {
 		auth = loadAuthConnection(agentDir, providerId);
@@ -958,16 +968,37 @@ function buildCatalogFromProviders(providers: Record<string, unknown>): ModelsDe
 	return catalog;
 }
 
+interface MemoryCostCatalogCacheEntry {
+	timestamp: number;
+	catalog: ModelsDevCostCatalog;
+}
+
+const memoryCostCatalogCache = new Map<string, MemoryCostCatalogCacheEntry>();
+
+export function clearMemoryCostCatalogCache(): void {
+	memoryCostCatalogCache.clear();
+}
+
 export async function fetchModelsDevCostMap(
 	agentDir?: string,
 	forceRefresh = false,
 	signal?: AbortSignal,
 ): Promise<ModelsDevCostCatalog> {
 	const cachePath = getModelsDevCachePath(agentDir);
+
+	if (!forceRefresh) {
+		const inMem = memoryCostCatalogCache.get(cachePath);
+		if (inMem && Date.now() - inMem.timestamp < MODELS_DEV_CACHE_TTL_MS) {
+			return inMem.catalog;
+		}
+	}
+
 	const cached = readModelsDevCacheFile(cachePath, agentDir);
 
 	if (!forceRefresh && cached && Date.now() - cached.timestamp < MODELS_DEV_CACHE_TTL_MS) {
-		return buildCatalogFromProviders(cached.providers);
+		const catalog = buildCatalogFromProviders(cached.providers);
+		memoryCostCatalogCache.set(cachePath, { timestamp: cached.timestamp, catalog });
+		return catalog;
 	}
 
 	const controller = new AbortController();
@@ -979,7 +1010,9 @@ export async function fetchModelsDevCostMap(
 			const providers = asRecord(await response.json());
 			if (providers && isModelsDevProviders(providers)) {
 				writeModelsDevCacheFile(cachePath, providers);
-				return buildCatalogFromProviders(providers);
+				const catalog = buildCatalogFromProviders(providers);
+				memoryCostCatalogCache.set(cachePath, { timestamp: Date.now(), catalog });
+				return catalog;
 			}
 		}
 	} catch {
@@ -989,7 +1022,9 @@ export async function fetchModelsDevCostMap(
 	}
 
 	if (cached) {
-		return buildCatalogFromProviders(cached.providers);
+		const catalog = buildCatalogFromProviders(cached.providers);
+		memoryCostCatalogCache.set(cachePath, { timestamp: cached.timestamp, catalog });
+		return catalog;
 	}
 
 	return { exact: new Map(), normalized: new Map() };
