@@ -1,6 +1,6 @@
 {
 	"name": "@izhimu/pi-cliproxyapi-provider",
-	"version": "1.4.19-1",
+	"version": "1.4.21-1",
 	"description": "Pi provider extension that auto-registers CLIProxyAPI models, plus TUI elapsed/TPS status",
 	"type": "module",
 	"keywords": [
@@ -21,7 +21,10 @@
 		"url": "https://github.com/izhimu/pi-cliproxyapi-provider/issues"
 	},
 	"publishConfig": {
-		"access": "public"
+		"access": "public",
+		"registry": "https://registry.npmjs.org/",
+		"@izhimu:registry": "https://registry.npmjs.org/",
+		"tag": "latest"
 	},
 	"engines": {
 		"node": ">=22.19.0"

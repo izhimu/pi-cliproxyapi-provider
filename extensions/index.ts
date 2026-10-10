@@ -130,7 +130,12 @@ class ModelRefreshCoordinator {
 			if (this.stopped) return;
 			void action().catch((error) => {
 				const message = error instanceof Error ? error.message : String(error);
-				logWarn(`auto-recovery refresh failed (${message}); will retry`);
+				if (message.includes("is stale after session replacement or reload")) {
+					this.clearRecovery();
+					return;
+				}
+				// Suppressed: logging this into the TUI corrupts the display.
+				// The refresh path already reschedules the next attempt.
 			});
 		}, delay);
 		this.recoveryTimer.unref?.();
@@ -149,6 +154,7 @@ class ModelRefreshCoordinator {
 			this.clearRecovery();
 			return;
 		}
+		this.clearRecoveryTimer();
 		this.recoveryAttempt = snapshot.attempt;
 		this.activeRecovery = snapshot;
 		this.recoveryTimer = setTimeout(() => {
@@ -156,7 +162,12 @@ class ModelRefreshCoordinator {
 			if (this.stopped) return;
 			void snapshot.action().catch((error) => {
 				const message = error instanceof Error ? error.message : String(error);
-				logWarn(`auto-recovery refresh failed (${message}); will retry`);
+				if (message.includes("is stale after session replacement or reload")) {
+					this.clearRecovery();
+					return;
+				}
+				// Suppressed: logging this into the TUI corrupts the display.
+				// The refresh path already reschedules the next attempt.
 			});
 		}, snapshot.delayMs);
 		this.recoveryTimer.unref?.();
@@ -811,7 +822,11 @@ export default async function (pi: ExtensionAPI): Promise<void> {
 	const fastMode = new FastModeController(fastEnabled);
 	const modelRefreshCoordinator = new ModelRefreshCoordinator();
 
-	let streamSimple: CliproxyCodexStreamSimple;
+	let streamSimple: CliproxyCodexStreamSimple = () => {
+		throw new Error(
+			`Codex protocol stream is unavailable for provider: ${identity.providerId} (api: ${CLIPROXYAPI_CODEX_API})`,
+		);
+	};
 	try {
 		const streams = await loadCliproxyCodexStreams([identity.providerId, "cliproxyapi"], {
 			shouldUseFast: (model) => model.provider === identity.providerId && fastMode.isEffectiveFor(model.id),
@@ -940,7 +955,6 @@ export default async function (pi: ExtensionAPI): Promise<void> {
 	} catch (error) {
 		const message = error instanceof Error ? error.message : String(error);
 		logWarn(`failed to load patched codex protocol: ${message}`);
-		return;
 	}
 
 	const fastFooter = new FastFooterController(identity.providerId, fastMode, () =>
@@ -1006,24 +1020,33 @@ export default async function (pi: ExtensionAPI): Promise<void> {
 	let notifiedStaleModelId: string | undefined;
 
 	const checkAndNotifyStaleModel = (ctx: ExtensionContext): void => {
-		const currentModel = ctx.model;
-		const configured = loadConfiguredDefaultSettings(agentDir);
-		const affectedStaleId = latestStaleModelIds.find(
-			(staleId) =>
-				(currentModel && currentModel.provider === identity.providerId && currentModel.id === staleId) ||
-				isModelReferencedAsDefault(configured, staleId, identity.providerId),
-		);
+		try {
+			const currentModel = ctx.model;
+			const configured = loadConfiguredDefaultSettings(agentDir);
+			const affectedStaleId = latestStaleModelIds.find(
+				(staleId) =>
+					(currentModel && currentModel.provider === identity.providerId && currentModel.id === staleId) ||
+					isModelReferencedAsDefault(configured, staleId, identity.providerId),
+			);
 
-		if (affectedStaleId) {
-			if (notifiedStaleModelId !== affectedStaleId) {
-				notifiedStaleModelId = affectedStaleId;
-				ctx.ui.notify(
-					`Model '${affectedStaleId}' is temporarily unavailable from upstream (retaining cached entry).`,
-					"warning",
-				);
+			if (affectedStaleId) {
+				if (notifiedStaleModelId !== affectedStaleId) {
+					notifiedStaleModelId = affectedStaleId;
+					ctx.ui.notify(
+						`Model '${affectedStaleId}' is temporarily unavailable from upstream (retaining cached entry).`,
+						"warning",
+					);
+				}
+			} else {
+				notifiedStaleModelId = undefined;
 			}
-		} else {
-			notifiedStaleModelId = undefined;
+		} catch (error) {
+			const message = error instanceof Error ? error.message : String(error);
+			if (message.includes("is stale after session replacement or reload")) {
+				activeContext = undefined;
+				return;
+			}
+			throw error;
 		}
 	};
 
@@ -1105,6 +1128,11 @@ export default async function (pi: ExtensionAPI): Promise<void> {
 			};
 		} catch (error) {
 			if (!modelRefreshCoordinator.isCurrent(refresh.generation)) return undefined;
+			const message = error instanceof Error ? error.message : String(error);
+			if (message.includes("is stale after session replacement or reload")) {
+				modelRefreshCoordinator.clearRecovery();
+				return undefined;
+			}
 			if (options.forceRefresh) {
 				scheduleActiveRecovery();
 			}

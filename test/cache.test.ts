@@ -989,6 +989,118 @@ describe("provider startup cache behavior", () => {
 			}
 		});
 	});
+
+	it("stops auto-recovery without re-scheduling when context is stale after session replacement or reload", async () => {
+		vi.useFakeTimers();
+		await withTempAgentDir(async (agentDir) => {
+			writeConfig(agentDir, { baseUrl: "http://127.0.0.1:8317", apiKey: "key" });
+			const cached = createMappedModels({
+				models: [createModel("gemini-3.8-flash-high"), createModel("gpt-4o")],
+			});
+			saveModelsCache(agentDir, cached, Date.now());
+
+			let fetchCount = 0;
+			const fetchMock = vi.spyOn(globalThis, "fetch").mockImplementation(async (input) => {
+				if (String(input).includes("models.dev")) {
+					return new Response("{}", { status: 200 });
+				}
+				fetchCount += 1;
+				// Dropping gemini produces stale models
+				return new Response(JSON.stringify({ models: [createCodexModel("gpt-4o")] }), { status: 200 });
+			});
+			const warnMock = vi.spyOn(console, "warn").mockImplementation(() => {});
+			const { pi, emit } = createPiMock();
+
+			// Stale context proxy throws when accessing any property
+			let isStale = false;
+			const staleErrorMsg =
+				"This extension ctx is stale after session replacement or reload. Do not use a captured pi or command ctx after ctx.newSession(), ctx.fork(), ctx.switchSession(), or ctx.reload().";
+			const mockCtx = {
+				ui: { notify: vi.fn() },
+				get model() {
+					if (isStale) throw new Error(staleErrorMsg);
+					return { id: "gpt-4o", provider: "cliproxyapi" };
+				},
+			};
+
+			try {
+				await providerExtension(pi);
+				await emit("session_start", { reason: "startup" }, mockCtx);
+				await vi.advanceTimersByTimeAsync(100);
+
+				expect(fetchCount).toBe(1);
+
+				// Mark context as stale (simulating reload or switchSession)
+				isStale = true;
+
+				// Advance past first recovery delay -> recovery executes
+				await vi.advanceTimersByTimeAsync(65_000);
+				expect(fetchCount).toBe(2);
+
+				// Verify it did not log auto-recovery retry warning
+				expect(warnMock).not.toHaveBeenCalledWith(expect.stringContaining("auto-recovery refresh failed"));
+			} finally {
+				vi.useRealTimers();
+				fetchMock.mockRestore();
+				warnMock.mockRestore();
+			}
+		});
+	});
+
+	it("stops auto-recovery without re-scheduling when ExtensionAPI is stale after session replacement or reload", async () => {
+		vi.useFakeTimers();
+		await withTempAgentDir(async (agentDir) => {
+			writeConfig(agentDir, { baseUrl: "http://127.0.0.1:8317", apiKey: "key" });
+			const cached = createMappedModels({
+				models: [createModel("gemini-3.8-flash-high"), createModel("gpt-4o")],
+			});
+			saveModelsCache(agentDir, cached, Date.now());
+
+			let fetchCount = 0;
+			const fetchMock = vi.spyOn(globalThis, "fetch").mockImplementation(async (input) => {
+				if (String(input).includes("models.dev")) {
+					return new Response("{}", { status: 200 });
+				}
+				fetchCount += 1;
+				return new Response(JSON.stringify({ models: [createCodexModel("gpt-4o")] }), { status: 200 });
+			});
+			const warnMock = vi.spyOn(console, "warn").mockImplementation(() => {});
+			const { pi, emit } = createPiMock();
+
+			let piIsStale = false;
+			const staleErrorMsg =
+				"This extension ctx is stale after session replacement or reload. Do not use a captured pi or command ctx after ctx.newSession(), ctx.fork(), ctx.switchSession(), or ctx.reload().";
+			const origRegisterProvider = pi.registerProvider.bind(pi);
+			pi.registerProvider = ((...args: Parameters<typeof origRegisterProvider>) => {
+				if (piIsStale) throw new Error(staleErrorMsg);
+				return origRegisterProvider(...args);
+			}) as typeof origRegisterProvider;
+
+			try {
+				await providerExtension(pi);
+				await emit("session_start", { reason: "startup" }, { ui: { notify: vi.fn() } });
+				await vi.advanceTimersByTimeAsync(100);
+
+				expect(fetchCount).toBe(1);
+
+				// Mark ExtensionAPI as stale
+				piIsStale = true;
+
+				// Advance past recovery delay -> recovery triggers, hits stale pi, and halts
+				await vi.advanceTimersByTimeAsync(65_000);
+				expect(fetchCount).toBe(2);
+
+				// Verify it did not reschedule or log retry warnings
+				await vi.advanceTimersByTimeAsync(300_000);
+				expect(fetchCount).toBe(2);
+				expect(warnMock).not.toHaveBeenCalledWith(expect.stringContaining("auto-recovery refresh failed"));
+			} finally {
+				vi.useRealTimers();
+				fetchMock.mockRestore();
+				warnMock.mockRestore();
+			}
+		});
+	});
 });
 
 describe("/cliproxyapi-refresh command", () => {

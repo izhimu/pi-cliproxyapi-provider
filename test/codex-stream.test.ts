@@ -6,6 +6,8 @@ import { afterEach, describe, expect, it } from "vitest";
 import {
 	computePatchedModuleCachePath,
 	loadCliproxyCodexStreams,
+	patchCodexSource,
+	resolveCodexModuleFromNodeEntry,
 	resolveOriginalCodexModulePath,
 	wellKnownCodexModuleCandidates,
 	writePatchedModuleCache,
@@ -76,7 +78,7 @@ function writeOmpPluginsCodexTree(home: string): { codexPath: string; jsonParseP
 }
 
 describe("wellKnownCodexModuleCandidates", () => {
-	it("lists HOME/.omp and HOME/.pi plugin roots without host-specific paths", () => {
+	it("lists HOME/.omp, HOME/.pi, and global package roots without host-specific paths", () => {
 		const candidates = wellKnownCodexModuleCandidates("/home/user");
 		expect(candidates).toEqual([
 			join("/home/user", ".omp", "plugins", CODEX_RELATIVE),
@@ -92,6 +94,49 @@ describe("wellKnownCodexModuleCandidates", () => {
 				"pi-coding-agent",
 				CODEX_RELATIVE,
 			),
+			join("/home/user", ".bun", "install", "global", CODEX_RELATIVE),
+			join(
+				"/home/user",
+				".bun",
+				"install",
+				"global",
+				"node_modules",
+				"@earendil-works",
+				"pi-coding-agent",
+				CODEX_RELATIVE,
+			),
+			join("/home/user", ".npm-global", CODEX_RELATIVE),
+			join("/home/user", ".npm-global", "lib", CODEX_RELATIVE),
+			join("/home/user", ".npm-global", "lib", "node_modules", "@earendil-works", "pi-coding-agent", CODEX_RELATIVE),
+			join("/home/user", "Library", "pnpm", "global", "5", CODEX_RELATIVE),
+			join(
+				"/home/user",
+				"Library",
+				"pnpm",
+				"global",
+				"5",
+				"node_modules",
+				"@earendil-works",
+				"pi-coding-agent",
+				CODEX_RELATIVE,
+			),
+			join("/home/user", ".local", "share", "pnpm", "global", "5", CODEX_RELATIVE),
+			join(
+				"/home/user",
+				".local",
+				"share",
+				"pnpm",
+				"global",
+				"5",
+				"node_modules",
+				"@earendil-works",
+				"pi-coding-agent",
+				CODEX_RELATIVE,
+			),
+			join("/usr", "local", "lib", CODEX_RELATIVE),
+			join("/usr", "local", "lib", "node_modules", "@earendil-works", "pi-coding-agent", CODEX_RELATIVE),
+			join("/opt", "homebrew", "lib", CODEX_RELATIVE),
+			join("/opt", "homebrew", "lib", "node_modules", "@earendil-works", "pi-coding-agent", CODEX_RELATIVE),
 		]);
 		expect(candidates.join("\n")).not.toMatch(/\/Users\/|\/home\/(?!user\b)|Ravi|tailscale/i);
 	});
@@ -182,6 +227,31 @@ describe("resolveOriginalCodexModulePath", () => {
 		});
 
 		expect(resolved.path).toBe(nested);
+	});
+
+	it("resolves bundled host module through wrapper script importing target CLI entry", () => {
+		const hostRoot = tempDir("pi-cpa-wrapper-root-");
+		const targetCli = join(hostRoot, "bundle", "cli.js");
+		const codexModule = join(
+			hostRoot,
+			"bundle",
+			"node_modules",
+			"@earendil-works",
+			"pi-ai",
+			"dist",
+			"api",
+			"openai-codex-responses.js",
+		);
+		const wrapper = join(hostRoot, "bin", "pi");
+
+		writeFile(targetCli, "export {}\n");
+		writeFile(codexModule, "export {}\n");
+		writeFile(
+			wrapper,
+			`import { join } from "node:path";\nconst cliPath = ${JSON.stringify(targetCli)};\nawait import(cliPath);\n`,
+		);
+
+		expect(resolveCodexModuleFromNodeEntry(wrapper)).toBe(codexModule);
 	});
 });
 
@@ -320,5 +390,39 @@ describe("loadCliproxyCodexStreams", () => {
 		expect(typeof streams.streamSimple).toBe("function");
 		expect(typeof streams.stream).toBe("function");
 		expect(streams.api).toBe("cliproxyapi-codex-responses");
+	});
+});
+
+describe("patchCodexSource", () => {
+	it("patches both compiled JS and TS typed extractAccountId signatures", () => {
+		const baseTemplate = (extractFn: string) => `
+${extractFn}
+headers.set("chatgpt-account-id", accountId);
+const CODEX_TOOL_CALL_PROVIDERS = new Set(["openai"]);
+const SESSION_WEBSOCKET_CACHE_TTL_MS = 5 * 60 * 1000;
+const transport = options?.transport || "auto";
+let retriedWebSocketConnectionLimit = false;
+if (!aborted && connectionLimitBeforeStart && !retriedWebSocketConnectionLimit) {
+	retriedWebSocketConnectionLimit = true;
+	continue;
+}
+if (aborted || (isCodexNonTransportError(error) && !connectionLimitBeforeStart)) {
+	recordWebSocketFailure(options?.sessionId, error);
+	recordWebSocketSseFallback(options?.sessionId);
+	break;
+}
+`;
+		const jsPatched = patchCodexSource(baseTemplate("function extractAccountId(token) {\n\treturn token;\n}"), [
+			"cliproxyapi",
+		]);
+		expect(jsPatched).toContain("CLIProxyAPI accepts plain API keys");
+		expect(jsPatched).toContain('"cliproxyapi"');
+
+		const tsPatched = patchCodexSource(
+			baseTemplate("function extractAccountId(token: string): string | undefined {\n\treturn token;\n}"),
+			["cliproxyapi"],
+		);
+		expect(tsPatched).toContain("CLIProxyAPI accepts plain API keys");
+		expect(tsPatched).toContain('"cliproxyapi"');
 	});
 });
