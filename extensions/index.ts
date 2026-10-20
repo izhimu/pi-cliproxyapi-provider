@@ -698,7 +698,7 @@ export function registerRefreshCommand(options: {
 	refreshCoordinator?: ModelRefreshCoordinator;
 	onRefresh?: (
 		connection: ResolvedConnection,
-		options?: { pruneStale?: boolean },
+		options?: { replaceCache?: boolean; pruneStale?: boolean },
 	) => Promise<RefreshResult | undefined>;
 }): void {
 	const {
@@ -733,12 +733,13 @@ export function registerRefreshCommand(options: {
 			try {
 				let result: RefreshResult | undefined;
 				if (onRefresh) {
-					result = await onRefresh(connection, { pruneStale: true });
+					result = await onRefresh(connection, { replaceCache: true, pruneStale: true });
 					if (!result) return;
 				} else {
 					const refresh = refreshCoordinator?.begin();
 					const { loaded } = await resolveMappedModels(agentDir, connection.baseUrlInput, connection.apiKey, {
 						forceRefresh: true,
+						replaceCache: true,
 						pruneStale: true,
 						fastMode: fastMode.isEnabled(),
 						signal: refresh?.signal,
@@ -1064,7 +1065,7 @@ export default async function (pi: ExtensionAPI): Promise<void> {
 	const connection = resolveConnection(agentDir, identity.providerId, configFile);
 	const registerConfiguredProvider = async (
 		currentConnection: { baseUrlInput: string; apiKey: string },
-		options: { forceRefresh?: boolean; pruneStale?: boolean } = {},
+		options: { forceRefresh?: boolean; replaceCache?: boolean; pruneStale?: boolean } = {},
 	): Promise<RefreshResult | undefined> => {
 		const refresh = modelRefreshCoordinator.begin();
 		try {
@@ -1074,6 +1075,7 @@ export default async function (pi: ExtensionAPI): Promise<void> {
 				currentConnection.apiKey,
 				{
 					forceRefresh: options.forceRefresh,
+					replaceCache: options.replaceCache ?? options.pruneStale,
 					pruneStale: options.pruneStale,
 					fastMode: fastMode.isEnabled(),
 					signal: refresh.signal,
@@ -1167,7 +1169,11 @@ export default async function (pi: ExtensionAPI): Promise<void> {
 		fastMode,
 		refreshCoordinator: modelRefreshCoordinator,
 		onRefresh: (currentConnection, opts) =>
-			registerConfiguredProvider(currentConnection, { forceRefresh: true, pruneStale: opts?.pruneStale ?? true }),
+			registerConfiguredProvider(currentConnection, {
+				forceRefresh: true,
+				replaceCache: opts?.replaceCache ?? true,
+				pruneStale: opts?.pruneStale ?? true,
+			}),
 	});
 	if (!connection) {
 		logInfo(

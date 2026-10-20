@@ -11,6 +11,10 @@ import { readStoredCredential } from "@earendil-works/pi-coding-agent";
 export type ThinkingLevelMap = Partial<
 	Record<"off" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max" | "ultra", string | null>
 >;
+// Local subset of pi OpenAIResponsesCompat; only the flags this plugin emits.
+export interface PiProviderModelCompat {
+	supportsMidConvoEffort?: boolean;
+}
 
 export const DEFAULT_PROVIDER_ID = "cliproxyapi";
 export const DEFAULT_PROVIDER_NAME = "CLIProxyAPI";
@@ -80,6 +84,7 @@ export interface CodexClientModel {
 	service_tiers?: Array<CodexServiceTier | string>;
 	additional_speed_tiers?: string[];
 	visibility?: string;
+	supports_reasoning_effort_updates?: boolean;
 }
 
 export interface CodexClientModelsResponse {
@@ -116,6 +121,7 @@ export interface PiProviderModel {
 	stale?: boolean;
 	lastSeenAt?: number;
 	staleSince?: number;
+	compat?: PiProviderModelCompat;
 }
 
 export interface MappedModels {
@@ -593,6 +599,9 @@ export function codexModelId(model: CodexClientModel): string {
 export function supportsFastServiceTier(model: CodexClientModel): boolean {
 	return Array.isArray(model.service_tiers) && model.service_tiers.length > 0;
 }
+export function supportsReasoningEffortUpdates(model: CodexClientModel): boolean {
+	return model.supports_reasoning_effort_updates === true;
+}
 
 export function toPiModel(
 	model: CodexClientModel,
@@ -645,6 +654,7 @@ export function toPiModel(
 		contextWindow,
 		maxTokens,
 		thinkingLevelMap: buildThinkingLevelMap(efforts),
+		...(hasReasoning && supportsReasoningEffortUpdates(model) ? { compat: { supportsMidConvoEffort: true } } : {}),
 	};
 }
 
@@ -1176,6 +1186,7 @@ export async function resolveMappedModels(
 		signal?: AbortSignal;
 		shouldCommit?: () => boolean;
 		staleTtlMs?: number;
+		replaceCache?: boolean;
 		pruneStale?: boolean;
 	} = {},
 ): Promise<ResolvedModelsResult> {
@@ -1183,14 +1194,15 @@ export async function resolveMappedModels(
 		options.fastMode === undefined || (cache.fastMode ?? false) === options.fastMode;
 
 	const existingCache = loadModelsCache(agentDir, baseUrlInput);
-	if (!options.forceRefresh) {
+	if (!options.forceRefresh && !options.replaceCache && !options.pruneStale) {
 		if (existingCache && cacheMatchesFastMode(existingCache)) {
 			return { loaded: existingCache, fromCache: true };
 		}
 	}
 
 	const fresh = await loadMappedModels(baseUrlInput, apiKey, options.fastMode, agentDir, options.signal);
-	const { merged } = options.pruneStale
+	const shouldReplace = options.replaceCache || options.pruneStale;
+	const { merged } = shouldReplace
 		? mergeModelsWithExistingCache(null, fresh, Date.now())
 		: mergeModelsWithExistingCache(existingCache, fresh, Date.now(), options.staleTtlMs);
 	if (!options.signal?.aborted && (options.shouldCommit?.() ?? true)) {
