@@ -1114,9 +1114,9 @@ export default async function (pi: ExtensionAPI): Promise<void> {
 					}
 				}
 				if (!options.forceRefresh) {
-					void registerConfiguredProvider(currentConnection, { forceRefresh: true }).catch((error) => {
-						const message = error instanceof Error ? error.message : String(error);
-						logWarn(`failed to refresh cached models (${message}); keeping the cached model list.`);
+					void registerConfiguredProvider(currentConnection, { forceRefresh: true }).catch(() => {
+						// Suppressed: logging this into the TUI corrupts the display.
+						// The refresh path already reschedules the next attempt.
 					});
 				}
 			} else {
