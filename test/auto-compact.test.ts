@@ -178,6 +178,14 @@ describe("proactive compaction controller", () => {
 		expect(wrapped(model, { messages: [] })).toBe(baseResult);
 	});
 
+	it("clears a pending overflow when OMP settles the session", async () => {
+		const { ctx, handlers, model, wrapped, baseResult } = setup();
+		await handlers.get("turn_end")?.({ message: assistantMessage(THRESHOLD + 1), toolResults: [{}] }, ctx);
+
+		handlers.get("session_stop")?.({}, ctx);
+		expect(wrapped(model, { messages: [] })).toBe(baseResult);
+	});
+
 	it("reloads settings before scheduling", async () => {
 		const { ctx, handlers, model, wrapped, baseResult, settingsPath } = setup();
 		writeFileSync(

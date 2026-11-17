@@ -14,6 +14,7 @@ interface MutableModel {
 	id: string;
 	provider: string;
 	reasoning: boolean;
+	thinking?: unknown;
 	contextWindow: number;
 }
 
@@ -22,6 +23,7 @@ interface FooterSessionLike {
 		model?: MutableModel;
 		thinkingLevel?: string;
 	};
+	autoCompactionEnabled?: boolean;
 }
 
 interface FooterComponentLike {
@@ -95,6 +97,7 @@ function installFooterPatch(controller: FastFooterController): void {
 
 				const originalId = model.id;
 				const originalReasoning = model.reasoning;
+				const originalThinking = model.thinking;
 				const originalContextWindow = model.contextWindow;
 				const fastEnabled = activeController.isEffectiveFor(model);
 				if (fastEnabled || activeController.isPaused()) {
@@ -105,16 +108,18 @@ function installFooterPatch(controller: FastFooterController): void {
 						fastEnabled,
 					);
 					model.reasoning = false;
+					if (originalThinking !== undefined) model.thinking = undefined;
 				}
 				model.contextWindow = activeController.getDisplayContextWindow(
 					originalContextWindow,
-					footer.autoCompactEnabled ?? false,
+					session?.autoCompactionEnabled ?? footer.autoCompactEnabled ?? false,
 				);
 				try {
 					return originalRender.call(this, width);
 				} finally {
 					model.id = originalId;
 					model.reasoning = originalReasoning;
+					if (originalThinking !== undefined) model.thinking = originalThinking;
 					model.contextWindow = originalContextWindow;
 				}
 			},

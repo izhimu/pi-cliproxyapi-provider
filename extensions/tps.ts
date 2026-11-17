@@ -140,7 +140,7 @@ export default function (pi: ExtensionAPI) {
 		}
 	});
 
-	pi.on("agent_settled", (_event, ctx) => {
+	const handleSettled = (_event: unknown, ctx: ExtensionContext): void => {
 		if (requestStartMs === null) return;
 		// Subagents must never clear the parent elapsed status or notify TPS.
 		if (!isPrimaryUiSession(ctx)) return;
@@ -161,7 +161,11 @@ export default function (pi: ExtensionAPI) {
 		const tps = output > 0 ? (output / elapsedSecondsExact).toFixed(1) : "--";
 		const message = `TPS ${tps} tok/s. out ${output.toLocaleString()}, in ${input.toLocaleString()}, cache r/w ${cacheRead.toLocaleString()}/${cacheWrite.toLocaleString()}, total ${totalTokens.toLocaleString()}, ${elapsedSecondsExact.toFixed(1)}s`;
 		ctx.ui.notify(message, "info");
-	});
+	};
+	pi.on("agent_settled", handleSettled);
+	// OMP emits session_stop instead of agent_settled; Pi ignores this registration.
+	const ompApi = pi as unknown as { on(event: "session_stop", handler: typeof handleSettled): void };
+	ompApi.on("session_stop", handleSettled);
 
 	pi.on("session_shutdown", (_event, ctx) => {
 		clearRefreshTimer();

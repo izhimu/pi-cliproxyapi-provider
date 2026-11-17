@@ -205,9 +205,13 @@ export class ProactiveCompactionController {
 			this.resetWebSocketSession(resolveCompactionSessionId(ctx));
 		});
 
-		pi.on("agent_settled", () => {
+		const clearPending = () => {
 			this.pending = undefined;
-		});
+		};
+		pi.on("agent_settled", clearPending);
+		// OMP emits session_stop instead of agent_settled; Pi ignores this registration.
+		const ompApi = pi as unknown as { on(event: "session_stop", handler: () => void): void };
+		ompApi.on("session_stop", clearPending);
 
 		pi.on("turn_end", async (event, ctx) => {
 			const message = event.message;

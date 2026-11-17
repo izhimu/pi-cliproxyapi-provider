@@ -206,11 +206,19 @@ describe("Fast footer model status", () => {
 
 	it("patches and restores the built-in footer across session reloads", () => {
 		const originalRender = FooterComponent.prototype.render;
-		const displayModel = { id: model.id, provider: model.provider, reasoning: true, contextWindow: 372000 };
+		const displayModel = {
+			id: model.id,
+			provider: model.provider,
+			reasoning: true,
+			thinking: { efforts: ["xhigh"] },
+			contextWindow: 372000,
+		};
 		const stubRender = function stubRender(this: FooterComponent, width: number): string[] {
 			const session = (this as unknown as { session: { state: { model: typeof displayModel } } }).session;
 			if (width < 0) throw new Error("render failed");
-			return [`${session.state.model.id}|${session.state.model.reasoning}`];
+			return [
+				`${session.state.model.id}|${session.state.model.reasoning}|${session.state.model.thinking ? "thinking" : "off"}`,
+			];
 		};
 		const fastMode = new FastModeController(false);
 		fastMode.setSupportedModelIds([model.id]);
@@ -240,30 +248,31 @@ describe("Fast footer model status", () => {
 			footer.register(pi);
 			handlers.get("session_start")?.({}, ctx);
 
-			expect(component.render(80)).toEqual(["gpt-5.4 • xhigh • <yellow>fast</yellow>|false"]);
+			expect(component.render(80)).toEqual(["gpt-5.4 • xhigh • <yellow>fast</yellow>|false|off"]);
 			expect(displayModel).toEqual({
 				id: "gpt-5.4",
 				provider: "cliproxyapi",
 				reasoning: true,
+				thinking: { efforts: ["xhigh"] },
 				contextWindow: 372000,
 			});
 
 			const orangePaused = "\x1b[38;5;214mpaused\x1b[39m";
 			pauseMode.setEnabled(true);
-			expect(component.render(80)).toEqual([`gpt-5.4 • xhigh • <yellow>fast</yellow> • ${orangePaused}|false`]);
+			expect(component.render(80)).toEqual([`gpt-5.4 • xhigh • <yellow>fast</yellow> • ${orangePaused}|false|off`]);
 			pauseMode.setEnabled(false);
 			fastMode.setEnabled(false);
-			expect(component.render(80)).toEqual(["gpt-5.4|true"]);
+			expect(component.render(80)).toEqual(["gpt-5.4|true|thinking"]);
 
 			pauseMode.setEnabled(true);
-			expect(component.render(80)).toEqual([`gpt-5.4 • xhigh • ${orangePaused}|false`]);
+			expect(component.render(80)).toEqual([`gpt-5.4 • xhigh • ${orangePaused}|false|off`]);
 			pauseMode.setEnabled(false);
 			fastMode.setEnabled(true);
 			fastMode.setSupportedModelIds([]);
-			expect(component.render(80)).toEqual(["gpt-5.4|true"]);
+			expect(component.render(80)).toEqual(["gpt-5.4|true|thinking"]);
 
 			pauseMode.setEnabled(true);
-			expect(component.render(80)).toEqual([`gpt-5.4 • xhigh • ${orangePaused}|false`]);
+			expect(component.render(80)).toEqual([`gpt-5.4 • xhigh • ${orangePaused}|false|off`]);
 			pauseMode.setEnabled(false);
 			fastMode.setSupportedModelIds([model.id]);
 
@@ -274,7 +283,7 @@ describe("Fast footer model status", () => {
 			expect(FooterComponent.prototype.render).toBe(stubRender);
 
 			handlers.get("session_start")?.({}, ctx);
-			expect(component.render(80)).toEqual(["gpt-5.4 • xhigh • <yellow>fast</yellow>|false"]);
+			expect(component.render(80)).toEqual(["gpt-5.4 • xhigh • <yellow>fast</yellow>|false|off"]);
 		} finally {
 			handlers.get("session_shutdown")?.({}, ctx);
 			FooterComponent.prototype.render = originalRender;
@@ -300,8 +309,8 @@ describe("Fast footer model status", () => {
 		} as unknown as ExtensionAPI;
 		const ctx = { mode: "tui" } as ExtensionContext;
 		const component = Object.create(FooterComponent.prototype) as FooterComponent;
-		Object.defineProperty(component, "session", { value: { state: { model: displayModel } } });
-		Object.defineProperty(component, "autoCompactEnabled", { value: true, writable: true });
+		const footerSession = { state: { model: displayModel }, autoCompactionEnabled: true };
+		Object.defineProperty(component, "session", { value: footerSession });
 
 		try {
 			FooterComponent.prototype.render = stubRender;
@@ -311,7 +320,7 @@ describe("Fast footer model status", () => {
 			expect(component.render(80)).toEqual(["32.6%/306k"]);
 			expect(displayModel.contextWindow).toBe(372000);
 
-			(component as unknown as { autoCompactEnabled: boolean }).autoCompactEnabled = false;
+			footerSession.autoCompactionEnabled = false;
 			expect(component.render(80)).toEqual(["26.9%/372k"]);
 		} finally {
 			handlers.get("session_shutdown")?.({}, ctx);

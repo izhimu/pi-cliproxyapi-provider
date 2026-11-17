@@ -127,7 +127,7 @@ describe("Elapsed timer", () => {
 		await vi.advanceTimersByTimeAsync(5000);
 		expect(setStatus).toHaveBeenLastCalledWith("tps", "Elapsed 6s");
 
-		await handlers.get("agent_settled")?.({}, ctx);
+		await handlers.get("session_stop")?.({}, ctx);
 		expect(setStatus).toHaveBeenLastCalledWith("tps", "Elapsed 6s");
 		await vi.advanceTimersByTimeAsync(2000);
 		expect(setStatus).toHaveBeenLastCalledWith("tps", "Elapsed 6s");
