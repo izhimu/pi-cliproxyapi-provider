@@ -17,7 +17,10 @@ const DEFAULT_COMPACTION_RESERVE_TOKENS = 16384;
 interface CompatibleSettingsManager {
 	reload?: () => Promise<void> | void;
 	reloadFromDisk?: () => Promise<void> | void;
-	getCompactionSettings?: () => { enabled?: unknown; reserveTokens?: unknown };
+	getCompactionSettings?: (model?: Pick<Model<Api>, "provider" | "id">) => {
+		enabled?: unknown;
+		reserveTokens?: unknown;
+	};
 	get?: (key: string) => unknown;
 }
 
@@ -42,10 +45,13 @@ function normalizeCompactionSettings(enabled: unknown, reserveTokens: unknown): 
 	};
 }
 
-function readCompactionSettings(manager: CompatibleSettingsManager): ProactiveCompactionSettings | undefined {
+function readCompactionSettings(
+	manager: CompatibleSettingsManager,
+	model?: Pick<Model<Api>, "provider" | "id">,
+): ProactiveCompactionSettings | undefined {
 	if (typeof manager.getCompactionSettings === "function") {
 		try {
-			const settings = manager.getCompactionSettings();
+			const settings = manager.getCompactionSettings(model);
 			return normalizeCompactionSettings(settings?.enabled, settings?.reserveTokens);
 		} catch {
 			// Fall through to OMP's key-based settings API when available.
@@ -152,6 +158,7 @@ export function createProactiveCompactionStream(model: Model<Api>, contextTokens
 export class ProactiveCompactionController {
 	private settingsManager: CompatibleSettingsManager | undefined;
 	private cachedCompactionSettings: ProactiveCompactionSettings | undefined;
+	private currentModel: Pick<Model<Api>, "provider" | "id"> | undefined;
 	private pending: { modelKey: string; contextTokens: number; threshold: number } | undefined;
 	private closeWebSocketSessions: CloseCodexWebSocketSessions | undefined;
 
@@ -168,8 +175,11 @@ export class ProactiveCompactionController {
 	}
 
 	register(pi: ExtensionAPI): void {
+		let ompSessionStopPending = false;
 		pi.on("session_start", async (_event, ctx) => {
 			this.cachedCompactionSettings = undefined;
+			this.currentModel = ctx.model;
+			ompSessionStopPending = false;
 			try {
 				const created: unknown = SettingsManager.create(ctx.cwd, this.agentDir, {
 					projectTrusted: ctx.isProjectTrusted(),
@@ -177,7 +187,7 @@ export class ProactiveCompactionController {
 				const manager = isPromiseLike(created) ? await created : created;
 				this.settingsManager = isCompatibleSettingsManager(manager) ? manager : undefined;
 				this.cachedCompactionSettings = this.settingsManager
-					? readCompactionSettings(this.settingsManager)
+					? readCompactionSettings(this.settingsManager, ctx.model)
 					: undefined;
 			} catch {
 				this.settingsManager = undefined;
@@ -188,7 +198,9 @@ export class ProactiveCompactionController {
 		pi.on("session_shutdown", () => {
 			this.settingsManager = undefined;
 			this.cachedCompactionSettings = undefined;
+			this.currentModel = undefined;
 			this.pending = undefined;
+			ompSessionStopPending = false;
 		});
 
 		pi.on("session_before_compact", () => {
@@ -209,9 +221,19 @@ export class ProactiveCompactionController {
 			this.pending = undefined;
 		};
 		pi.on("agent_settled", clearPending);
-		// OMP emits session_stop instead of agent_settled; Pi ignores this registration.
-		const ompApi = pi as unknown as { on(event: "session_stop", handler: () => void): void };
-		ompApi.on("session_stop", clearPending);
+		// OMP session_stop precedes agent_end and may schedule another turn.
+		const ompApi = pi as unknown as {
+			on(event: "session_stop", handler: () => void): void;
+			on(event: "agent_end", handler: (event: { willContinue?: boolean }) => void): void;
+		};
+		ompApi.on("session_stop", () => {
+			ompSessionStopPending = true;
+		});
+		ompApi.on("agent_end", (event) => {
+			const settled = ompSessionStopPending && event.willContinue !== true;
+			ompSessionStopPending = false;
+			if (settled) clearPending();
+		});
 
 		pi.on("turn_end", async (event, ctx) => {
 			const message = event.message;
@@ -226,8 +248,9 @@ export class ProactiveCompactionController {
 			if (!settingsManager) {
 				return;
 			}
+			this.currentModel = ctx.model;
 			await reloadSettings(settingsManager);
-			const refreshedSettings = readCompactionSettings(settingsManager);
+			const refreshedSettings = readCompactionSettings(settingsManager, ctx.model);
 			if (refreshedSettings) {
 				this.cachedCompactionSettings = refreshedSettings;
 			}
@@ -252,7 +275,9 @@ export class ProactiveCompactionController {
 	}
 
 	getCompactionSettings(): ProactiveCompactionSettings | undefined {
-		const current = this.settingsManager ? readCompactionSettings(this.settingsManager) : undefined;
+		const current = this.settingsManager
+			? readCompactionSettings(this.settingsManager, this.currentModel)
+			: undefined;
 		if (current) {
 			this.cachedCompactionSettings = current;
 		}

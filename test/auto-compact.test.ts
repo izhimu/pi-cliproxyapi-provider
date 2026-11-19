@@ -178,12 +178,38 @@ describe("proactive compaction controller", () => {
 		expect(wrapped(model, { messages: [] })).toBe(baseResult);
 	});
 
-	it("clears a pending overflow when OMP settles the session", async () => {
+	it("keeps pending overflow through OMP continuation and clears it at final agent_end", async () => {
 		const { ctx, handlers, model, wrapped, baseResult } = setup();
 		await handlers.get("turn_end")?.({ message: assistantMessage(THRESHOLD + 1), toolResults: [{}] }, ctx);
 
 		handlers.get("session_stop")?.({}, ctx);
+		handlers.get("agent_end")?.({ messages: [], willContinue: true }, ctx);
+		const continuedStream = wrapped(model, { messages: [] });
+		expect((await continuedStream.result()).stopReason).toBe("error");
+
+		await handlers.get("turn_end")?.({ message: assistantMessage(THRESHOLD + 1), toolResults: [{}] }, ctx);
+		handlers.get("session_stop")?.({}, ctx);
+		handlers.get("agent_end")?.({ messages: [] }, ctx);
 		expect(wrapped(model, { messages: [] })).toBe(baseResult);
+	});
+
+	it("passes the active model to Pi compaction settings", async () => {
+		const manager = {
+			getCompactionSettings: vi.fn((model?: Pick<Model<Api>, "provider" | "id">) => ({
+				enabled: true,
+				reserveTokens: model ? 12345 : RESERVE_TOKENS,
+			})),
+			reload: vi.fn(),
+		};
+		vi.spyOn(SettingsManager, "create").mockReturnValue(manager as unknown as SettingsManager);
+		const { ctx, handlers, model, controller } = setup();
+
+		await handlers.get("session_start")?.({}, ctx);
+		expect(manager.getCompactionSettings).toHaveBeenCalledWith(model);
+		expect(controller.getCompactionSettings()).toEqual({ enabled: true, reserveTokens: 12345 });
+
+		await handlers.get("turn_end")?.({ message: assistantMessage(THRESHOLD + 1), toolResults: [{}] }, ctx);
+		expect(manager.getCompactionSettings).toHaveBeenLastCalledWith(model);
 	});
 
 	it("reloads settings before scheduling", async () => {

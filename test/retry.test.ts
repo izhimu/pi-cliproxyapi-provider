@@ -1,7 +1,28 @@
-import { type AssistantMessage, isRetryableAssistantError } from "@earendil-works/pi-ai";
+import {
+	type AssistantMessage,
+	type AssistantMessageEventStream,
+	createAssistantMessageEventStream,
+	isRetryableAssistantError,
+} from "@earendil-works/pi-ai";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
-import { describe, expect, it } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import { normalizeTransientNetworkError, registerTransientNetworkErrorRetry } from "../extensions/retry.ts";
+
+const { getCustomApiMock, registerCustomApiMock } = vi.hoisted(() => ({
+	getCustomApiMock: vi.fn(),
+	registerCustomApiMock: vi.fn(),
+}));
+
+vi.mock("@earendil-works/pi-ai", async (importOriginal) => ({
+	...(await importOriginal<Record<string, unknown>>()),
+	getCustomApi: getCustomApiMock,
+	registerCustomApi: registerCustomApiMock,
+}));
+
+beforeEach(() => {
+	getCustomApiMock.mockReset();
+	registerCustomApiMock.mockReset();
+});
 
 const TRANSIENT_STREAM_ERRORS = [
 	"Codex error: read tcp 172.16.209.2:57303->172.64.155.209:443: use of closed network connection",
@@ -67,5 +88,36 @@ describe("transient network error normalization", () => {
 
 		const otherProvider = assistantError(TRANSIENT_STREAM_ERRORS[0], "other");
 		expect(handler({ type: "message_end", message: otherProvider }, {} as ExtensionContext)).toBeUndefined();
+	});
+
+	it("normalizes the OMP error stream before the host consumes it", async () => {
+		const source = createAssistantMessageEventStream();
+		const streamSimple = vi.fn(() => source);
+		getCustomApiMock.mockReturnValue({ stream: streamSimple, streamSimple, sourceId: "test-source" });
+		const pi = { on: vi.fn() } as unknown as ExtensionAPI;
+		registerTransientNetworkErrorRetry(pi, "cliproxyapi");
+
+		expect(registerCustomApiMock).toHaveBeenCalledWith(
+			"cliproxyapi-codex-responses",
+			expect.any(Function),
+			"test-source",
+			expect.any(Function),
+		);
+		const wrappedStreamSimple = registerCustomApiMock.mock.calls[0]?.[1] as (
+			model: unknown,
+			context: unknown,
+		) => AssistantMessageEventStream;
+		const hostStream = wrappedStreamSimple(
+			{ api: "cliproxyapi-codex-responses", provider: "cliproxyapi", id: "gpt-5.6-sol" },
+			{ messages: [] },
+		);
+		const original = assistantError(TRANSIENT_STREAM_ERRORS[0]);
+		source.push({ type: "error", reason: "error", error: original });
+		source.end();
+
+		const delivered = await hostStream.result();
+		expect(delivered.errorMessage).toBe(`network error: ${TRANSIENT_STREAM_ERRORS[0]}`);
+		expect(isRetryableAssistantError(delivered)).toBe(true);
+		expect(original.errorMessage).toBe(TRANSIENT_STREAM_ERRORS[0]);
 	});
 });

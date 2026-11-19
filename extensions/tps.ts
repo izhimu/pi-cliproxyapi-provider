@@ -32,6 +32,8 @@ export default function (pi: ExtensionAPI) {
 	let cacheRead = 0;
 	let cacheWrite = 0;
 	let totalTokens = 0;
+	let ompSessionStopPending = false;
+	const countedAssistantMessages = new Set<AssistantMessage>();
 
 	function clearRefreshTimer(): void {
 		if (refreshTimer === undefined) return;
@@ -119,6 +121,7 @@ export default function (pi: ExtensionAPI) {
 		cacheRead = 0;
 		cacheWrite = 0;
 		totalTokens = 0;
+		countedAssistantMessages.clear();
 		refreshStatus();
 
 		clearRefreshTimer();
@@ -130,17 +133,24 @@ export default function (pi: ExtensionAPI) {
 		// Ignore usage from subagent / non-TUI sessions.
 		if (!isPrimaryUiSession(ctx)) return;
 
+		const ompSettled =
+			ompSessionStopPending && (event as typeof event & { willContinue?: boolean }).willContinue !== true;
+		ompSessionStopPending = false;
+
 		for (const message of event.messages) {
-			if (!isAssistantMessage(message)) continue;
+			if (!isAssistantMessage(message) || countedAssistantMessages.has(message)) continue;
+			countedAssistantMessages.add(message);
 			input += message.usage.input || 0;
 			output += message.usage.output || 0;
 			cacheRead += message.usage.cacheRead || 0;
 			cacheWrite += message.usage.cacheWrite || 0;
 			totalTokens += message.usage.totalTokens || 0;
 		}
+
+		if (ompSettled) handleSettled(event, ctx);
 	});
 
-	const handleSettled = (_event: unknown, ctx: ExtensionContext): void => {
+	function handleSettled(_event: unknown, ctx: ExtensionContext): void {
 		if (requestStartMs === null) return;
 		// Subagents must never clear the parent elapsed status or notify TPS.
 		if (!isPrimaryUiSession(ctx)) return;
@@ -161,11 +171,17 @@ export default function (pi: ExtensionAPI) {
 		const tps = output > 0 ? (output / elapsedSecondsExact).toFixed(1) : "--";
 		const message = `TPS ${tps} tok/s. out ${output.toLocaleString()}, in ${input.toLocaleString()}, cache r/w ${cacheRead.toLocaleString()}/${cacheWrite.toLocaleString()}, total ${totalTokens.toLocaleString()}, ${elapsedSecondsExact.toFixed(1)}s`;
 		ctx.ui.notify(message, "info");
-	};
+	}
 	pi.on("agent_settled", handleSettled);
-	// OMP emits session_stop instead of agent_settled; Pi ignores this registration.
-	const ompApi = pi as unknown as { on(event: "session_stop", handler: typeof handleSettled): void };
-	ompApi.on("session_stop", handleSettled);
+	// OMP session_stop precedes agent_end and may schedule another turn.
+	const ompApi = pi as unknown as {
+		on(event: "session_stop", handler: (_event: unknown, ctx: ExtensionContext) => void): void;
+	};
+	ompApi.on("session_stop", (_event, ctx) => {
+		if (requestStartMs !== null && isPrimaryUiSession(ctx)) {
+			ompSessionStopPending = true;
+		}
+	});
 
 	pi.on("session_shutdown", (_event, ctx) => {
 		clearRefreshTimer();
@@ -174,5 +190,7 @@ export default function (pi: ExtensionAPI) {
 		pausedDurationAtStartMs = 0;
 		pauseWasEnabledAtStart = false;
 		statusCtx = null;
+		ompSessionStopPending = false;
+		countedAssistantMessages.clear();
 	});
 }

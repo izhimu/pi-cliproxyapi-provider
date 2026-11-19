@@ -1,6 +1,7 @@
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import type { AssistantMessage } from "@earendil-works/pi-ai";
 import type { ExtensionAPI, ExtensionCommandContext, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { registerPauseCommands } from "../extensions/index.ts";
@@ -128,10 +129,78 @@ describe("Elapsed timer", () => {
 		expect(setStatus).toHaveBeenLastCalledWith("tps", "Elapsed 6s");
 
 		await handlers.get("session_stop")?.({}, ctx);
-		expect(setStatus).toHaveBeenLastCalledWith("tps", "Elapsed 6s");
 		await vi.advanceTimersByTimeAsync(2000);
-		expect(setStatus).toHaveBeenLastCalledWith("tps", "Elapsed 6s");
-		expect(notify).toHaveBeenCalledWith(expect.stringContaining(", 6.0s"), "info");
+		expect(setStatus).toHaveBeenLastCalledWith("tps", "Elapsed 8s");
+		expect(notify).not.toHaveBeenCalled();
+
+		await handlers.get("agent_end")?.({ messages: [] }, ctx);
+		expect(setStatus).toHaveBeenLastCalledWith("tps", "Elapsed 8s");
+		await vi.advanceTimersByTimeAsync(2000);
+		expect(setStatus).toHaveBeenLastCalledWith("tps", "Elapsed 8s");
+		expect(notify).toHaveBeenCalledWith(expect.stringContaining(", 8.0s"), "info");
+	});
+
+	it("settles OMP usage only at final agent_end after continuation", async () => {
+		vi.useFakeTimers();
+		vi.setSystemTime(0);
+		pauseController.setEnabled(false);
+
+		const handlers = new Map<string, (event: unknown, ctx: ExtensionContext) => unknown>();
+		const setStatus = vi.fn();
+		const notify = vi.fn();
+		const pi = {
+			on: (event: string, handler: (event: unknown, ctx: ExtensionContext) => unknown) => {
+				handlers.set(event, handler);
+			},
+		} as unknown as ExtensionAPI;
+		const ctx = {
+			hasUI: true,
+			mode: "tui",
+			ui: {
+				notify,
+				setStatus,
+				theme: { fg: (_color: string, text: string) => text },
+			},
+		} as unknown as ExtensionContext;
+		const assistant = (
+			output: number,
+			cacheRead: number,
+			cacheWrite: number,
+			totalTokens: number,
+		): AssistantMessage => ({
+			role: "assistant",
+			content: [],
+			api: "cliproxyapi-codex-responses",
+			provider: "cliproxyapi",
+			model: "gpt-5.6-sol",
+			usage: {
+				input: 100,
+				output,
+				cacheRead,
+				cacheWrite,
+				totalTokens,
+				cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+			},
+			stopReason: "stop",
+			timestamp: Date.now(),
+		});
+
+		tpsExtension(pi);
+		const first = assistant(10, 1, 2, 110);
+		const second = assistant(20, 2, 3, 220);
+		await handlers.get("before_agent_start")?.({}, ctx);
+		await vi.advanceTimersByTimeAsync(1000);
+		await handlers.get("session_stop")?.({}, ctx);
+		await handlers.get("agent_end")?.({ messages: [first], willContinue: true }, ctx);
+		expect(notify).not.toHaveBeenCalled();
+
+		await vi.advanceTimersByTimeAsync(1000);
+		await handlers.get("before_agent_start")?.({}, ctx);
+		await handlers.get("session_stop")?.({}, ctx);
+		await handlers.get("agent_end")?.({ messages: [first, second] }, ctx);
+
+		expect(notify).toHaveBeenCalledOnce();
+		expect(notify).toHaveBeenCalledWith("TPS 15.0 tok/s. out 30, in 200, cache r/w 3/5, total 330, 2.0s", "info");
 	});
 
 	it("ignores late agent events after session shutdown", async () => {
